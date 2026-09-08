@@ -16,6 +16,10 @@ atau menu keyboard-picker yang lengkap, install Termux lewat sideload:
    dengan cara yang sama
 4. Buka Termux:Boot **sekali** (boleh langsung tertutup sendiri) — ini
    mendaftarkan dia sebagai boot receiver ke sistem
+5. Install juga Termux:API untuk fitur wake-lock:
+   ```bash
+   pkg install termux-api -y
+   ```
 
 ## 2. Aktifkan ADB over WiFi
 
@@ -117,6 +121,9 @@ adb shell input tap <X> <Y>
 Ulangi proses dump untuk setiap layar/tombol berbeda (kolom search, hasil
 pencarian pertama, tombol Bayar, metode Cash, tombol konfirmasi, dst).
 
+> Kalau resolusi layar berubah (ganti TV/monitor), semua koordinat ini
+> harus dicari ulang dari nol.
+
 ## 6. Push script ke STB
 
 ```cmd
@@ -128,6 +135,15 @@ adb shell su -c "chmod +x /sdcard/auto_checkout.sh"
 
 Edit dulu koordinat dan `SCANNER_DEV` di kedua file sebelum di-push,
 sesuaikan dengan hasil langkah 4 dan 5.
+
+> **Penting soal line ending:** kalau script ditulis/diedit di Notepad
+> Windows lalu di-push ke STB, biasanya tersimpan dengan format CRLF
+> (`\r\n`). Shell Android (mksh/toybox) membaca `\r` sebagai bagian dari
+> perintah, menyebabkan error aneh seperti
+> `syntax error: unexpected 'done'` padahal scriptnya terlihat benar.
+> Solusi paling aman: tulis/edit script langsung di Termux (format Unix
+> otomatis), atau jalankan `sed -i 's/\r$//' namafile.sh` di Termux
+> setelah push dari Windows.
 
 ## 7. Pasang boot wrapper
 
@@ -145,6 +161,7 @@ mkdir -p ~/.termux/boot
 cat > ~/.termux/boot/start_scan.sh << 'EOF'
 #!/data/data/com.termux/files/usr/bin/sh
 sleep 25
+su -c "termux-wake-lock" 2>/dev/null || true
 su -c "settings put secure default_input_method com.wparam.nullkeyboard/.NullKeyboard"
 su -c "sh /sdcard/auto_scan_v3.sh"
 su -c "sh /sdcard/auto_checkout.sh &"
@@ -167,7 +184,24 @@ Buka Magisk Manager → menu Superuser → pastikan `Termux` dan
 `Termux:Boot` berstatus **Grant** (toggle aktif), supaya tidak ada popup
 konfirmasi yang menghalangi eksekusi otomatis saat boot.
 
-## 9. Uji manual sebelum reboot
+## 9. Whitelist battery optimization (WAJIB, jangan dilewati)
+
+Ini langkah yang paling sering jadi penyebab "script sudah benar tapi
+tetap tidak jalan otomatis". Android (dan lebih parah lagi, banyak STB
+custom vendor) sangat agresif membunuh proses background yang dianggap
+"menganggur", termasuk proses shell Termux yang sedang `sleep`.
+
+Dari laptop:
+
+```cmd
+adb shell dumpsys deviceidle whitelist +com.termux
+adb shell dumpsys deviceidle whitelist +com.termux.boot
+```
+
+Atau manual di STB: **Setelan → Aplikasi → Termux → Baterai → "Tanpa
+batasan"**, ulangi untuk Termux:Boot.
+
+## 10. Uji manual sebelum reboot
 
 ```bash
 sh ~/.termux/boot/start_scan.sh
@@ -176,18 +210,62 @@ sh ~/.termux/boot/start_scan.sh
 Pastikan tidak ada error yang muncul, dan sistem benar-benar merespons
 scan barcode seperti yang diharapkan.
 
-## 10. Reboot dan tes akhir
+## 11. Reboot dan tes akhir
 
 Matikan dan nyalakan ulang STB (cabut-colok power). Tunggu ±25 detik.
 Buka Loyverse, coba tembak barcode — barang harus otomatis masuk ke
 keranjang tanpa klik apa pun.
 
-## Troubleshooting singkat
+---
+
+## Kenapa polling 30 detik, bukan sleep panjang sekali tembak
+
+Versi awal `auto_checkout.sh` menghitung selisih detik ke jam 23:59 lalu
+`sleep` sekali sepanjang itu (bisa berjam-jam). Ini terlihat efisien di
+atas kertas, tapi gagal total di praktik: Android (lewat Doze Mode dan
+app-killer bawaan vendor STB) cenderung membunuh proses yang dianggap
+"menganggur" dalam `sleep` jangka panjang, terutama saat layar mati atau
+sistem idle lama.
+
+Solusi yang terbukti jalan: ganti jadi **polling** — script bangun tiap
+30 detik, cek apakah sekarang sudah masuk jendela waktu target
+(23:59:00 sampai 23:59:90, ada toleransi 90 detik), lalu tidur lagi kalau
+belum. Karena proses "bangun" secara berkala, sistem tidak menganggapnya
+menganggur dan cenderung tidak membunuhnya — apalagi setelah dikombinasi
+dengan wake-lock dan whitelist baterai di langkah 9.
+
+## Troubleshooting
 
 | Masalah | Kemungkinan penyebab |
 |---|---|
 | `getevent: Permission denied` walau sudah `su` | SELinux Enforcing memblokir `/dev/input/*` |
 | `mkdir: Read-only file system` di `~/.termux/boot` | Sedang dalam mode root (`#`), harus `exit` dulu ke mode user (`$`) |
+| `syntax error: unexpected 'done'` padahal script terlihat benar | File tersimpan dalam format Windows (CRLF). Jalankan `sed -i 's/\r$//' namafile.sh` |
+| `arithmetic expression: expecting ')'` saat parsing jam/menit | Shell Android tidak mendukung prefix `10#` untuk angka; pakai `${H#0}` untuk buang nol di depan |
+| Script auto-checkout tidak pernah trigger jam 23:59 | Kemungkinan besar proses dibunuh Android sebelum sempat jalan — cek `pgrep -f auto_checkout` untuk pastikan proses masih hidup, pastikan whitelist baterai (langkah 9) sudah dilakukan, dan cek `checkout_log.txt` untuk lihat kapan persis proses berhenti |
+| Termux hang / tidak responsif setelah jalankan script manual | Lupa menambahkan `&` di akhir perintah, sehingga script mengambil alih terminal secara foreground. Jalankan dengan `su -c "sh /sdcard/auto_checkout.sh &"` |
 | Tap tidak kena tombol yang benar | Koordinat sudah tidak sesuai — resolusi berubah, atau layout Loyverse update |
 | Boot wrapper tidak jalan otomatis | Termux:Boot belum pernah dibuka manual sekali, atau permission Magisk belum di-grant |
 | Gboard masih muncul walau NullKeyboard aktif | Aplikasi kasir memanggil keyboard secara eksplisit lewat kode — coba cek apakah ada opsi *"scan mode"* khusus di aplikasi tersebut |
+
+### Cara cek proses masih hidup
+
+```bash
+pgrep -f auto_checkout
+```
+Kalau keluar angka (PID), proses masih berjalan. Kalau kosong, proses
+sudah mati dan perlu dijalankan ulang manual atau dicari kenapa boot
+wrapper-nya gagal.
+
+### Cara baca log
+
+`auto_checkout.sh` menulis log ke `/sdcard/checkout_log.txt` setiap 30
+detik. Ambil dari laptop:
+
+```cmd
+adb pull /sdcard/checkout_log.txt
+```
+
+Baris terakhir di file itu menunjukkan kapan persis proses berhenti
+menulis log — itu kira-kira waktu proses dibunuh sistem (kalau memang
+itu masalahnya).
