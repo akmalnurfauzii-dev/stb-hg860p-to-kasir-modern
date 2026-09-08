@@ -10,8 +10,15 @@
 # (yaitu /data/data/com.termux/files/home/.termux/boot/start_scan.sh)
 #
 # Jangan lupa `chmod +x` setelah membuat file ini.
+# Pastikan juga file ini disimpan dalam format Unix (LF), bukan
+# Windows (CRLF) -- lihat catatan di docs/setup-guide.md kalau
+# menemukan error aneh seperti "syntax error: unexpected 'done'".
 
 sleep 25   # beri waktu Android & Loyverse selesai boot dulu
+
+# Cegah Android men-sleep-kan CPU terlalu agresif, supaya proses
+# background (terutama auto_checkout.sh) tidak dibunuh sistem.
+su -c "termux-wake-lock" 2>/dev/null || true
 
 # Matikan soft keyboard bawaan, ganti ke NullKeyboard supaya scan
 # barcode tidak memicu Gboard menutupi layar transaksi.
